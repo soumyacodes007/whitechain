@@ -24,6 +24,8 @@ export type IntentRow = {
   description: string | null;
   source: string;
   invoice_id: string | null;
+  customer_id: string | null;
+  customer_email: string | null;
   expires_at: Date;
   deadline: string | number;
   signature: Hex;

@@ -19,6 +19,8 @@ const schema = z.object({
   DEPLOYER_PRIVATE_KEY: z.string().optional(),
   INTENT_SIGNER_PRIVATE_KEY: z.preprocess(blankToUndefined, z.string().optional()),
   OPERATOR_PRIVATE_KEY: z.preprocess(blankToUndefined, z.string().optional()),
+  RESEND_API_KEY: z.preprocess(blankToUndefined, z.string().optional()),
+  EMAIL_FROM: z.preprocess(blankToUndefined, z.string().default("SettleKit <receipts@settlekit.dev>")),
   CHAIN_ID: z.preprocess(blankToUndefined, z.coerce.number().default(deployment.chainId)),
   PAYMENTS_ADDRESS: z.preprocess(blankToUndefined, z.string().default(deployment.SettleKitPayments.address)),
   USDT_ADDRESS: z.preprocess(blankToUndefined, z.string().default(deployment.usdt)),
@@ -45,6 +47,8 @@ export type Config = {
   signerKey: Hex;
   /** Sends refunds, gasless payments and renewals. Holds gas only, never customer funds. */
   operatorKey: Hex;
+  resendApiKey?: string;
+  emailFrom?: string;
   startBlock: bigint;
 };
 
@@ -69,5 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     signerKey: signerKey as Hex,
     operatorKey: (parsed.OPERATOR_PRIVATE_KEY ?? signerKey) as Hex,
     startBlock: parsed.INDEXER_START_BLOCK,
+    resendApiKey: parsed.RESEND_API_KEY,
+    emailFrom: parsed.EMAIL_FROM,
   };
 }

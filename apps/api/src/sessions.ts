@@ -16,6 +16,7 @@ export type SessionRow = {
   status: string;
   payment_link_id: string | null;
   client_reference_id: string | null;
+  customer_email: string | null;
   amount: string | number | null;
   currency: string | null;
   metadata: Record<string, string>;
