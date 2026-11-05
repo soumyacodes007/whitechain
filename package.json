@@ -1,7 +1,11 @@
 {
   "name": "settlekit",
   "private": true,
-  "workspaces": ["apps/*", "packages/*"],
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "examples/*"
+  ],
   "scripts": {
     "dev:api": "npm run dev -w @settlekit/api",
     "test": "npm test --workspaces --if-present",

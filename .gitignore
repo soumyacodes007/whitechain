@@ -11,3 +11,10 @@ contracts/broadcast/
 # API
 apps/api/data/
 dist/
+
+# Web
+.next/
+next-env.d.ts
+apps/web/public/button.js
+apps/web/e2e/out/
+*.tsbuildinfo
