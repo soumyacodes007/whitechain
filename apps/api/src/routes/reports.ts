@@ -93,7 +93,7 @@ export async function reportRoutes(app: FastifyInstance, { db, config }: Deps) {
   async function ledger(merchantId: string, from: Date, to: Date): Promise<LedgerRow[]> {
     const rows = await db.query(
       `SELECT * FROM (
-         SELECT p.confirmed_at AS date, CASE WHEN i.source = 'invoice' THEN 'payment' ELSE 'payment' END AS type,
+         SELECT p.confirmed_at AS date, 'payment' AS type,
                 coalesce(inv.number, i.metadata->>'orderId', i.id) AS reference,
                 coalesce(c.name, c.email, p.payer) AS customer, i.description,
                 p.amount AS gross, 0 AS refund, i.currency, i.late_settlement,
@@ -101,7 +101,7 @@ export async function reportRoutes(app: FastifyInstance, { db, config }: Deps) {
          FROM payments p
          JOIN payment_intents i ON i.id = p.intent_id
          LEFT JOIN invoices inv ON inv.id = p.invoice_id
-         LEFT JOIN customers c ON c.id = inv.customer_id
+         LEFT JOIN customers c ON c.id = coalesce(i.customer_id, inv.customer_id)
          WHERE i.merchant_id = $1
          UNION ALL
          SELECT r.created_at, 'refund',
@@ -112,7 +112,7 @@ export async function reportRoutes(app: FastifyInstance, { db, config }: Deps) {
          JOIN payments p ON p.id = r.payment_id
          JOIN payment_intents i ON i.id = p.intent_id
          LEFT JOIN invoices inv ON inv.id = p.invoice_id
-         LEFT JOIN customers c ON c.id = inv.customer_id
+         LEFT JOIN customers c ON c.id = coalesce(i.customer_id, inv.customer_id)
          WHERE i.merchant_id = $1 AND r.status = 'succeeded'
          UNION ALL
          SELECT ch.created_at, 'renewal', s.id, s.wallet, s.plan_name,

@@ -2,8 +2,9 @@ import { createHmac } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.ts";
 import type { Config } from "../src/config.ts";
-import { createDb, type Db } from "../src/db.ts";
+import type { Db } from "../src/db.ts";
 import { createMerchant } from "../src/merchants.ts";
+import { createTestDb } from "./testDb.ts";
 import { signatureHeader } from "../src/webhooks.ts";
 
 const config: Config = {
@@ -37,7 +38,7 @@ const get = (url: string, secret = key) =>
   app.inject({ method: "GET", url, headers: { authorization: `Bearer ${secret}` } });
 
 beforeAll(async () => {
-  db = await createDb({});
+  db = await createTestDb();
   app = buildApp({ db, config });
   key = (await createMerchant(db, { name: "A", merchantAddress: WALLET, payoutWallet: WALLET, refundWallet: WALLET }))
     .secretKey;
@@ -169,5 +170,19 @@ describe("events", () => {
     const res = await get("/v1/events/evt_missing");
     expect(res.statusCode).toBe(404);
     expect(res.json().error.code).toBe("resource_missing");
+  });
+});
+
+describe("rate limiting", () => {
+  it("caps the magic link route per IP with a Stripe-shaped error", async () => {
+    const limited = buildApp({ db, config, rateLimit: true });
+    const ask = () =>
+      limited.inject({ method: "POST", url: "/public/portal/magic", payload: { email: "a@example.com" } });
+
+    for (let i = 0; i < 5; i++) expect((await ask()).statusCode).toBe(200);
+    const blocked = await ask();
+    expect(blocked.statusCode).toBe(429);
+    expect(blocked.json().error.type).toBe("rate_limit_error");
+    await limited.close();
   });
 });

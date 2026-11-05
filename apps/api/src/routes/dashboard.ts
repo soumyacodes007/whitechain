@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { type Address, formatUnits } from "viem";
 import { z } from "zod";
 import type { Deps } from "../app.ts";
-import { notFound } from "../errors.ts";
+import { queueReceipt } from "../emails.ts";
+import { invalidRequest, notFound } from "../errors.ts";
 import { newId, newSecret, sha256 } from "../ids.ts";
 
 const DAY = 86_400_000;
@@ -22,6 +23,7 @@ const accountBody = z.object({
   timezone: z.string().optional(),
   confirmations: z.coerce.number().int().min(1).max(20).optional(),
   gasless: z.coerce.boolean().optional(),
+  reminders_enabled: z.coerce.boolean().optional(),
   invoice_prefix: z.string().min(1).max(10).optional(),
 });
 
@@ -35,7 +37,7 @@ const PAYMENT_SELECT = `
   FROM payments p
   JOIN payment_intents i ON i.id = p.intent_id
   LEFT JOIN invoices inv ON inv.id = p.invoice_id
-  LEFT JOIN customers c ON c.id = inv.customer_id`;
+  LEFT JOIN customers c ON c.id = coalesce(i.customer_id, inv.customer_id)`;
 
 export async function dashboardRoutes(app: FastifyInstance, { db, config, client, writer }: Deps) {
   const payment = (row: any) => {
@@ -299,28 +301,38 @@ export async function dashboardRoutes(app: FastifyInstance, { db, config, client
 
   app.get("/customers", async (request) => {
     const id = request.merchant.id;
-    const invoiceCustomers = await db.query(
+    const rows = await db.query(
       `SELECT c.id, c.name, c.email, c.wallets, c.notes,
-              coalesce(sum(p.amount), 0)
-                + coalesce((SELECT sum(ch.amount) FROM subscription_charges ch JOIN subscriptions s ON s.id = ch.subscription_id
-                            WHERE s.customer_id = c.id AND ch.status = 'succeeded'), 0) AS paid,
-              min(p.confirmed_at) AS first_payment, max(p.confirmed_at) AS last_payment,
-              count(DISTINCT inv.id) FILTER (WHERE inv.status IN ('open', 'partially_paid', 'overdue'))::int AS open_invoices,
-              coalesce((SELECT sum(r.amount) FROM refunds r JOIN payments rp ON rp.id = r.payment_id
-                        JOIN invoices ri ON ri.id = rp.invoice_id
-                        WHERE ri.customer_id = c.id AND r.status = 'succeeded'), 0) AS refunded
+              coalesce(pay.total, 0) + coalesce(ren.total, 0) AS paid,
+              coalesce(ref.total, 0) AS refunded,
+              pay.first_payment, pay.last_payment,
+              (SELECT count(*)::int FROM invoices inv
+               WHERE inv.customer_id = c.id AND inv.status IN ('open', 'partially_paid', 'overdue')) AS open_invoices
        FROM customers c
-       LEFT JOIN invoices inv ON inv.customer_id = c.id
-       LEFT JOIN payments p ON p.invoice_id = inv.id
+       LEFT JOIN LATERAL (
+         SELECT sum(p.amount) AS total, min(p.confirmed_at) AS first_payment, max(p.confirmed_at) AS last_payment
+         FROM payments p JOIN payment_intents i ON i.id = p.intent_id
+         WHERE i.customer_id = c.id
+       ) pay ON true
+       LEFT JOIN LATERAL (
+         SELECT sum(ch.amount) AS total FROM subscription_charges ch
+         JOIN subscriptions s ON s.id = ch.subscription_id
+         WHERE s.customer_id = c.id AND ch.status = 'succeeded'
+       ) ren ON true
+       LEFT JOIN LATERAL (
+         SELECT sum(r.amount) AS total FROM refunds r
+         JOIN payments p ON p.id = r.payment_id
+         JOIN payment_intents i ON i.id = p.intent_id
+         WHERE i.customer_id = c.id AND r.status = 'succeeded'
+       ) ref ON true
        WHERE c.merchant_id = $1
-       GROUP BY c.id
-       ORDER BY max(p.confirmed_at) DESC NULLS LAST, c.created_at DESC
+       ORDER BY pay.last_payment DESC NULLS LAST, c.created_at DESC
        LIMIT 200`,
       [id],
     );
     return {
       object: "list",
-      data: invoiceCustomers.map((row) => ({
+      data: rows.map((row) => ({
         id: row.id,
         name: row.name,
         email: row.email,
@@ -344,6 +356,35 @@ export async function dashboardRoutes(app: FastifyInstance, { db, config, client
     ]);
     if (moved.length === 0) throw notFound("customer", request.params.id);
     return { id: request.params.id, notes };
+  });
+
+  app.post<{ Params: { id: string } }>("/payments/:id/resend_receipt", async (request) => {
+    const [row] = await db.query(
+      `SELECT p.id, p.amount, p.tx_hash, coalesce(i.customer_email, c.email) AS email
+       FROM payments p JOIN payment_intents i ON i.id = p.intent_id
+       LEFT JOIN customers c ON c.id = i.customer_id
+       WHERE p.id = $1 AND i.merchant_id = $2`,
+      [request.params.id, request.merchant.id],
+    );
+    if (!row) throw notFound("payment", request.params.id);
+    if (!row.email) throw invalidRequest("customer_email_missing", "This customer has no email on file");
+    await queueReceipt(db, config, {
+      merchantId: request.merchant.id,
+      to: row.email,
+      paymentId: row.id,
+      amount: Number(row.amount),
+      txHash: row.tx_hash,
+    });
+    return { ok: true, to: row.email };
+  });
+
+  app.get("/emails", async (request) => {
+    const rows = await db.query(
+      `SELECT id, to_address, kind, subject, body, status, sent_at, created_at FROM emails
+       WHERE merchant_id = $1 ORDER BY created_at DESC, id LIMIT 30`,
+      [request.merchant.id],
+    );
+    return { object: "list", data: rows };
   });
 
   app.get("/webhook_endpoints", async (request) => {

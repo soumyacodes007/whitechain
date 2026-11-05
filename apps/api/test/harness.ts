@@ -21,9 +21,10 @@ import { afterAll, beforeAll, expect } from "vitest";
 import { buildApp } from "../src/app.ts";
 import { type ChainWriter, createChainWriter } from "../src/chain.ts";
 import type { Config } from "../src/config.ts";
-import { createDb, type Db } from "../src/db.ts";
+import type { Db } from "../src/db.ts";
 import { createIndexer } from "../src/indexer.ts";
 import { createMerchant } from "../src/merchants.ts";
+import { createTestDb } from "./testDb.ts";
 
 const CHAIN_ID = 31337;
 const DEPLOYER_KEY: Hex = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -98,7 +99,7 @@ function createReceiver(secret: () => string) {
 }
 
 /** Runs anvil with the real contracts, the API and a webhook receiver for one test file. */
-export function useChain(port = 18545) {
+export function useChain(port = 38545) {
   const rpc = `http://127.0.0.1:${port}`;
   const chain = defineChain({
     id: CHAIN_ID,
@@ -151,6 +152,12 @@ export function useChain(port = 18545) {
       }
     }
 
+    // Another chain on this port would fail in confusing ways, so say so directly.
+    const client_ = await testClient.request({ method: "web3_clientVersion" } as any);
+    if (!String(client_).toLowerCase().includes("anvil")) {
+      throw new Error(`Port ${port} is held by ${client_}, not anvil. Free it or change the test port.`);
+    }
+
     await testClient.setBalance({ address: customer.address, value: 10n ** 18n });
 
     usdt = await deploy("MockUSDT", []);
@@ -186,7 +193,7 @@ export function useChain(port = 18545) {
       startBlock: 0n,
     };
 
-    db = await createDb({});
+    db = await createTestDb();
     const client = createPublicClient({ chain, transport: httpTransport(rpc) }) as any;
     writer = createChainWriter(client, config);
     app = buildApp({ db, config, client, writer });
