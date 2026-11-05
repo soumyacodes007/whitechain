@@ -56,3 +56,51 @@ export function invoicePdf(
     doc.end();
   });
 }
+
+export function receiptPdf(
+  receipt: {
+    id: string;
+    merchant_name: string;
+    amount: string | number;
+    payer: string;
+    tx_hash: string;
+    block_number: string | number;
+    confirmed_at: Date;
+    reference: string;
+    refunds: { amount: string | number; reason: string | null; tx_hash: string | null }[];
+  },
+  config: Pick<Config, "explorerUrl">,
+) {
+  return new Promise<Buffer>((resolve, reject) => {
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    const chunks: Buffer[] = [];
+    doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    const refunded = receipt.refunds.reduce((sum, refund) => sum + Number(refund.amount), 0);
+
+    doc.fontSize(20).text(receipt.merchant_name);
+    doc.moveDown(0.5).fontSize(12).text("Payment receipt");
+    doc.fontSize(10).text(`Reference: ${receipt.reference}`);
+    doc.text(`Date: ${date(receipt.confirmed_at)}`);
+    doc.text(`Paid from: ${receipt.payer}`);
+    doc.moveDown().fontSize(12).text(`Amount paid: ${usd(Number(receipt.amount))}`);
+    if (refunded > 0) {
+      doc.fontSize(10).text(`Refunded: ${usd(refunded)}`);
+      doc.text(`Net paid: ${usd(Number(receipt.amount) - refunded)}`);
+    }
+
+    doc.moveDown().fontSize(11).text("Verify this payment");
+    doc.fontSize(8).text(`Transaction: ${receipt.tx_hash}`);
+    doc.text(`Block: ${receipt.block_number}`);
+    doc.text(`${config.explorerUrl}/tx/${receipt.tx_hash}`);
+    doc.moveDown(0.5).text("This record lives on Whitechain and can be checked without SettleKit.");
+
+    for (const refund of receipt.refunds) {
+      doc.moveDown(0.5).text(`Refund ${usd(Number(refund.amount))} (${(refund.reason ?? "other").replaceAll("_", " ")})`);
+      if (refund.tx_hash) doc.text(`${config.explorerUrl}/tx/${refund.tx_hash}`);
+    }
+    doc.end();
+  });
+}

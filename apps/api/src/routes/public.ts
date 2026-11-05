@@ -4,8 +4,9 @@ import type { Address, Hex } from "viem";
 import type { Deps } from "../app.ts";
 import { ApiError, invalidRequest, notFound } from "../errors.ts";
 import { centsToUnits, createIntent } from "../intents.ts";
+import { queueReceipt } from "../emails.ts";
 import { amountDue, getInvoice, invoicePayments, serializeInvoice } from "../invoices.ts";
-import { invoicePdf } from "../pdf.ts";
+import { invoicePdf, receiptPdf } from "../pdf.ts";
 import { createSession } from "../sessions.ts";
 import { linkByCode, serializeLink } from "./paymentLinks.ts";
 import { portalRoutes } from "./portal.ts";
@@ -30,6 +31,10 @@ const relayBody = z.object({
     s: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   }),
 });
+const emailBody = z.object({ email: z.email() });
+/** Sensitive or email-sending routes get a stricter per-IP limit than the global one. */
+const strict = (max: number) => ({ config: { rateLimit: { max, timeWindow: "1 minute" } } });
+
 const subscribedBody = z.object({ tx_hash: z.string().regex(/^0x[0-9a-fA-F]{64}$/) });
 
 const linkCheckoutBody = z.object({ quantity: z.coerce.number().int().min(1).max(100).default(1) });
@@ -83,7 +88,7 @@ export async function publicRoutes(app: FastifyInstance, { db, config, client, w
   });
 
   /** Submits a customer's signed gasless payment, paying the gas from the operator wallet. */
-  app.post<{ Params: { clientSecret: string } }>("/payment_intents/:clientSecret/relay", async (request) => {
+  app.post<{ Params: { clientSecret: string } }>("/payment_intents/:clientSecret/relay", strict(20), async (request) => {
     const input = relayBody.parse(request.body ?? {});
     if (!writer) throw new ApiError(503, "api_error", "relayer_unavailable", "Gasless payments are not configured");
 
@@ -131,6 +136,19 @@ export async function publicRoutes(app: FastifyInstance, { db, config, client, w
       console.error("relay failed:", cause instanceof Error ? cause.message.split("\n")[0] : cause);
       throw invalidRequest("relay_rejected", "This payment couldn't be submitted. Check your USDT balance and try again");
     }
+  });
+
+  app.post<{ Params: { id: string } }>("/checkout/:id/email", strict(20), async (request) => {
+    const { email } = emailBody.parse(request.body ?? {});
+    const [session] = await db.query(
+      "UPDATE checkout_sessions SET customer_email = $2 WHERE id = $1 AND status = 'open' RETURNING intent_id",
+      [request.params.id, email],
+    );
+    if (!session) throw notFound("checkout.session", request.params.id);
+    if (session.intent_id) {
+      await db.query("UPDATE payment_intents SET customer_email = $2 WHERE id = $1", [session.intent_id, email]);
+    }
+    return { ok: true };
   });
 
   app.post<{ Params: { id: string } }>("/checkout/:id/subscribed", async (request) => {
@@ -236,6 +254,47 @@ export async function publicRoutes(app: FastifyInstance, { db, config, client, w
     };
   });
 
+  const receiptRow = async (id: string) => {
+    const [row] = await db.query(
+      `SELECT p.*, i.currency, i.merchant_id, i.metadata, i.id AS intent_id, m.name AS merchant_name,
+              inv.number AS invoice_number
+       FROM payments p
+       JOIN payment_intents i ON i.id = p.intent_id
+       JOIN merchants m ON m.id = i.merchant_id
+       LEFT JOIN invoices inv ON inv.id = p.invoice_id
+       WHERE p.id = $1`,
+      [id],
+    );
+    if (!row) throw notFound("receipt", id);
+    return row;
+  };
+
+  app.get<{ Params: { id: string } }>("/receipts/:id/pdf", async (request, reply) => {
+    const row = await receiptRow(request.params.id);
+    const refunds = await db.query(
+      "SELECT amount, reason, tx_hash FROM refunds WHERE payment_id = $1 AND status = 'succeeded' ORDER BY created_at, id",
+      [row.id],
+    );
+    const reference = row.invoice_number ?? row.metadata?.orderId ?? row.intent_id;
+    return reply
+      .header("content-type", "application/pdf")
+      .header("content-disposition", `attachment; filename="receipt-${row.id}.pdf"`)
+      .send(await receiptPdf({ ...row, reference, refunds }, config));
+  });
+
+  app.post<{ Params: { id: string } }>("/receipts/:id/email", strict(5), async (request) => {
+    const { email } = emailBody.parse(request.body ?? {});
+    const row = await receiptRow(request.params.id);
+    await queueReceipt(db, config, {
+      merchantId: row.merchant_id,
+      to: email,
+      paymentId: row.id,
+      amount: Number(row.amount),
+      txHash: row.tx_hash,
+    });
+    return { ok: true };
+  });
+
   const openLink = async (code: string) => {
     const link = await linkByCode(db, code);
     if (!link) throw notFound("payment_link", code);
@@ -318,7 +377,11 @@ export async function publicRoutes(app: FastifyInstance, { db, config, client, w
       description: `Invoice ${invoice.number}`,
       source: "invoice",
     });
-    await db.query("UPDATE payment_intents SET invoice_id = $2 WHERE id = $1", [created.id, invoice.id]);
+    await db.query("UPDATE payment_intents SET invoice_id = $2, customer_id = $3 WHERE id = $1", [
+      created.id,
+      invoice.id,
+      invoice.customer_id,
+    ]);
     return { client_secret: created.client_secret };
   });
 }

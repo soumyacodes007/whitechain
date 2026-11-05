@@ -3,11 +3,15 @@ import type { FastifyInstance } from "fastify";
 import { type Address, type Hex, verifyMessage } from "viem";
 import { z } from "zod";
 import type { Deps } from "../app.ts";
+import { enqueueEmail } from "../emails.ts";
 import { ApiError, invalidRequest } from "../errors.ts";
 import { serializeSubscription, type SubscriptionRow } from "../subscriptions.ts";
 
 const MAX_SESSION_SECONDS = 60 * 60;
 
+const MAGIC_LINK_SECONDS = 30 * 60;
+
+const magicBody = z.object({ email: z.email() });
 const signInBody = z.object({
   address: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   expires: z.coerce.number().int().positive(),
@@ -19,6 +23,35 @@ export const signInMessage = (address: string, expires: number) =>
 
 export async function portalRoutes(app: FastifyInstance, { db, config }: Deps) {
   const mac = (value: string) => createHmac("sha256", `portal:${config.signerKey}`).update(value).digest("hex");
+
+  /** Subjects are base64url so an email's dots can't collide with the token's separators. */
+  const issue = (subject: string, expires: number) => {
+    const payload = `${Buffer.from(subject).toString("base64url")}.${expires}`;
+    return `${payload}.${mac(payload)}`;
+  };
+
+  app.post("/magic", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request) => {
+    const { email } = magicBody.parse(request.body ?? {});
+    const subject = email.toLowerCase();
+
+    const [known] = await db.query(
+      `SELECT 1 FROM customers WHERE lower(email) = $1
+       UNION ALL SELECT 1 FROM payment_intents WHERE lower(customer_email) = $1
+       LIMIT 1`,
+      [subject],
+    );
+    if (known) {
+      const token = issue(subject, Math.floor(Date.now() / 1000) + MAGIC_LINK_SECONDS);
+      await enqueueEmail(db, {
+        to: email,
+        kind: "magic_link",
+        subject: "Sign in to your payments",
+        text: `Open this link to see your payments. It works for 30 minutes.\n${config.checkoutUrl}/portal?token=${token}`,
+      });
+    }
+    // The answer is the same either way, so this can't be used to find out who is a customer.
+    return { ok: true };
+  });
 
   app.post("/session", async (request) => {
     const { address, expires, signature } = signInBody.parse(request.body ?? {});
@@ -33,19 +66,19 @@ export async function portalRoutes(app: FastifyInstance, { db, config }: Deps) {
     }).catch(() => false);
     if (!valid) throw invalidRequest("bad_signature", "That signature doesn't match this wallet");
 
-    const payload = `${address.toLowerCase()}.${expires}`;
-    return { token: `${payload}.${mac(payload)}`, expires };
+    return { token: issue(address.toLowerCase(), expires), expires };
   });
 
   app.get("/", async (request) => {
     const [, token = ""] = (request.headers.authorization ?? "").split(" ");
-    const [address, expires, signature] = token.split(".");
-    const expected = Buffer.from(mac(`${address}.${expires}`));
+    const [encoded, expires, signature] = token.split(".");
+    const expected = Buffer.from(mac(`${encoded}.${expires}`));
     const given = Buffer.from(signature ?? "");
     const valid = given.length === expected.length && timingSafeEqual(given, expected);
     if (!valid || Number(expires) < Date.now() / 1000) {
       throw new ApiError(401, "invalid_request_error", "session_invalid", "Please sign in again");
     }
+    const address = Buffer.from(encoded!, "base64url").toString();
 
     const payments = await db.query(
       `SELECT p.id, p.amount, p.tx_hash, p.confirmed_at, i.currency, m.name AS merchant,
@@ -55,7 +88,8 @@ export async function portalRoutes(app: FastifyInstance, { db, config }: Deps) {
        JOIN payment_intents i ON i.id = p.intent_id
        JOIN merchants m ON m.id = i.merchant_id
        LEFT JOIN invoices inv ON inv.id = p.invoice_id
-       WHERE lower(p.payer) = $1
+       LEFT JOIN customers c ON c.id = i.customer_id
+       WHERE lower(p.payer) = $1 OR lower(i.customer_email) = $1 OR lower(c.email) = $1
        ORDER BY p.confirmed_at DESC LIMIT 100`,
       [address],
     );
@@ -64,12 +98,14 @@ export async function portalRoutes(app: FastifyInstance, { db, config }: Deps) {
        FROM invoices inv
        JOIN payments p ON p.invoice_id = inv.id
        JOIN merchants m ON m.id = inv.merchant_id
-       WHERE lower(p.payer) = $1`,
+       LEFT JOIN customers c ON c.id = inv.customer_id
+       WHERE lower(p.payer) = $1 OR lower(c.email) = $1`,
       [address],
     );
     const subscriptions = await db.query<SubscriptionRow & { merchant: string }>(
       `SELECT s.*, m.name AS merchant FROM subscriptions s JOIN merchants m ON m.id = s.merchant_id
-       WHERE lower(s.wallet) = $1 ORDER BY s.created_at DESC`,
+       LEFT JOIN customers c ON c.id = s.customer_id
+       WHERE lower(s.wallet) = $1 OR lower(c.email) = $1 ORDER BY s.created_at DESC`,
       [address],
     );
     const refunds = await db.query(
@@ -78,7 +114,8 @@ export async function portalRoutes(app: FastifyInstance, { db, config }: Deps) {
        JOIN payments p ON p.id = r.payment_id
        JOIN payment_intents i ON i.id = p.intent_id
        JOIN merchants m ON m.id = i.merchant_id
-       WHERE lower(p.payer) = $1 AND r.status = 'succeeded'
+       LEFT JOIN customers c ON c.id = i.customer_id
+       WHERE (lower(p.payer) = $1 OR lower(i.customer_email) = $1 OR lower(c.email) = $1) AND r.status = 'succeeded'
        ORDER BY r.created_at DESC`,
       [address],
     );

@@ -1,3 +1,4 @@
+import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply } from "fastify";
 import qs from "qs";
 import type { PublicClient } from "viem";
@@ -26,7 +27,9 @@ declare module "fastify" {
   }
 }
 
-export type Deps = { db: Db; config: Config; client?: PublicClient; writer?: ChainWriter };
+const REQUESTS_PER_MINUTE = 600;
+
+export type Deps = { db: Db; config: Config; client?: PublicClient; writer?: ChainWriter; rateLimit?: boolean };
 
 export function send(reply: FastifyReply, result: { status: number; body: unknown; replayed?: boolean }) {
   if (result.replayed) reply.header("idempotent-replayed", "true");
@@ -42,6 +45,18 @@ export function buildApp(deps: Deps) {
   });
 
   app.decorateRequest("merchant", undefined as unknown as Merchant);
+
+  if (deps.rateLimit) {
+    app.register(rateLimit, {
+      max: REQUESTS_PER_MINUTE,
+      timeWindow: "1 minute",
+      errorResponseBuilder: (_request, context) =>
+        Object.assign(
+          new ApiError(429, "rate_limit_error", "rate_limit_exceeded", `Too many requests. Try again in ${context.after}`),
+          { statusCode: 429 },
+        ),
+    });
+  }
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ApiError) return reply.code(error.statusCode).send(error.toBody());
