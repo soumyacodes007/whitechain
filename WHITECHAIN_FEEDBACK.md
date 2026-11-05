@@ -37,6 +37,15 @@ Running notes from building SettleKit on Whitechain Sepolia.
 - Deploying both contracts used about 2.47M gas and cost about 0.0124 WBT.
 - The faucet gave 2 WBT for the day, which is plenty for this kind of app.
 
-## Still unknown
+## Live results
 
-- How to get test USDT. The implementation has `mint(address,uint256)`, but who may call it is unconfirmed.
+- Confirmed payments were indexed about 2.6 s after the transaction landed, with two confirmations.
+- A wallet that has never held WBT paid through permit and the relayer. Its WBT balance stayed at 0.
+- Gasless payment, API refund, subscribe, renewal and cancel together cost about 0.0019 WBT.
+- The transactions are listed under `proof` in `contracts/deployments/1874.json`.
+
+## Friction, continued
+
+- The docs point to bridged USDT.e at `0xaa79...8f46`, which is a different token from the track's
+  `0xcedf...55a7`. The required token isn't in the docs I could reach, and it has no public faucet, so
+  builders have to ask for it. Listing it in the docs would prevent bridging the wrong token.
