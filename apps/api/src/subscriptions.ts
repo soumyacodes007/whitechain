@@ -1,6 +1,8 @@
 import type { Config } from "./config.ts";
 import type { ChainWriter } from "./chain.ts";
+import { customerForWallet } from "./customers.ts";
 import type { Db, Queryable } from "./db.ts";
+import { queueCancelled, queueRenewal } from "./emails.ts";
 import { emitEvent, type EventSource } from "./events.ts";
 import { newId } from "./ids.ts";
 import { unitsToCents } from "./intents.ts";
@@ -66,13 +68,30 @@ export function serializeSubscription(row: SubscriptionRow, config: Pick<Config,
 const updateSubscription = async (q: Queryable, id: string, set: string, params: unknown[]) =>
   (await q.query<SubscriptionRow>(`UPDATE subscriptions SET ${set} WHERE id = $1 RETURNING *`, [id, ...params]))[0]!;
 
+const contactEmail = async (q: Queryable, customerId: string | null) =>
+  customerId
+    ? (await q.query<{ email: string | null }>("SELECT email FROM customers WHERE id = $1", [customerId]))[0]?.email
+    : null;
+
 export async function cancelSubscription(q: Queryable, config: Config, id: string, source?: EventSource) {
+  const [before] = await q.query<SubscriptionRow>("SELECT next_charge_at FROM subscriptions WHERE id = $1", [id]);
   const [row] = await q.query<SubscriptionRow>(
     `UPDATE subscriptions SET status = 'canceled', canceled_at = now(), next_charge_at = NULL
      WHERE id = $1 AND status <> 'canceled' RETURNING *`,
     [id],
   );
-  if (row) await emitEvent(q, row.merchant_id, "customer.subscription.deleted", serializeSubscription(row, config), source);
+  if (!row) return row;
+
+  await emitEvent(q, row.merchant_id, "customer.subscription.deleted", serializeSubscription(row, config), source);
+  const to = await contactEmail(q, row.customer_id);
+  if (to) {
+    await queueCancelled(q, {
+      merchantId: row.merchant_id,
+      to,
+      plan: row.plan_name ?? "subscription",
+      endsAt: before?.next_charge_at ?? null,
+    });
+  }
   return row;
 }
 
@@ -102,12 +121,7 @@ export const subscriptionLogs = {
     );
     if (!session) return;
 
-    const customerId = newId("cus");
-    await q.query("INSERT INTO customers (id, merchant_id, wallets) VALUES ($1, $2, $3::jsonb)", [
-      customerId,
-      session.merchant_id,
-      JSON.stringify([args.customer]),
-    ]);
+    const customerId = await customerForWallet(q, session.merchant_id, args.customer, session.customer_email);
 
     const [row] = await q.query<SubscriptionRow>(
       `INSERT INTO subscriptions
@@ -172,6 +186,17 @@ export const subscriptionLogs = {
     );
     if (Number(args.period) > 1) {
       await emitEvent(q, row.merchant_id, "customer.subscription.updated", serializeSubscription(row, config), log.source);
+      const to = await contactEmail(q, row.customer_id);
+      if (to) {
+        await queueRenewal(q, config, {
+          merchantId: row.merchant_id,
+          to,
+          plan: row.plan_name ?? "subscription",
+          amount: unitsToCents(args.amount),
+          nextChargeAt,
+          failed: false,
+        });
+      }
     }
   },
 
@@ -205,6 +230,18 @@ export const subscriptionLogs = {
       { ...serializeSubscription(sub, config), attempt: sub.failed_attempts + 1, period: Number(args.period) },
       log.source,
     );
+
+    const to = await contactEmail(q, sub.customer_id);
+    if (to) {
+      await queueRenewal(q, config, {
+        merchantId: sub.merchant_id,
+        to,
+        plan: sub.plan_name ?? "subscription",
+        amount: unitsToCents(args.amount),
+        nextChargeAt: null,
+        failed: true,
+      });
+    }
 
     const retry = RENEWAL_RETRY_SECONDS[sub.failed_attempts];
     if (retry === undefined) {

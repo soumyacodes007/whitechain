@@ -2,6 +2,7 @@ import { type Address, type Hex, parseAbi, parseAbiItem, type PublicClient } fro
 import { subscriptionsAbi } from "./chain.ts";
 import type { Config } from "./config.ts";
 import type { Db, Queryable } from "./db.ts";
+import { queueRefund } from "./emails.ts";
 import { emitEvent, type EventSource } from "./events.ts";
 import { newId } from "./ids.ts";
 import { serializeRefund } from "./routes/refunds.ts";
@@ -55,7 +56,7 @@ export function createIndexer(db: Db, client: PublicClient, config: Config) {
       const source = sourceOf(config, log);
       if (head - log.blockNumber < BigInt(intent.confirmations)) {
         const moved = await q.query(
-          "UPDATE payment_intents SET status = 'processing' WHERE id = $1 AND status IN ('requires_payment_method', 'canceled') RETURNING id",
+          "UPDATE payment_intents SET status = 'processing', processing_at = now() WHERE id = $1 AND status IN ('requires_payment_method', 'canceled') RETURNING id",
           [intent.id],
         );
         if (moved.length > 0) {
@@ -105,8 +106,17 @@ export function createIndexer(db: Db, client: PublicClient, config: Config) {
         payer: args.payer as string,
       };
       await emitEvent(q, intent.merchant_id, "payment_intent.succeeded", serializeIntent(settled, config), source);
-      await applySettlement(q, config, settled, source);
+      await applySettlement(q, config, settled, inserted[0].id, source);
     });
+  }
+
+  async function emailRefund(q: Queryable, intent: IntentWithMerchant, paymentId: string, amount: number, reason: string, txHash: string) {
+    const [contact] = await q.query<{ email: string | null }>(
+      "SELECT coalesce($2, c.email) AS email FROM payment_intents i LEFT JOIN customers c ON c.id = i.customer_id WHERE i.id = $1",
+      [intent.id, intent.customer_email],
+    );
+    if (!contact?.email) return;
+    await queueRefund(q, config, { merchantId: intent.merchant_id, to: contact.email, amount, reason, txHash, paymentId });
   }
 
   async function handleRefunded(
@@ -145,6 +155,7 @@ export function createIndexer(db: Db, client: PublicClient, config: Config) {
         const refund = serializeRefund({ ...pending, intent_id: intent.id, currency: intent.currency }, config);
         await emitEvent(q, intent.merchant_id, "refund.updated", refund, source);
         await emitEvent(q, intent.merchant_id, "charge.refunded", charge, source);
+        await emailRefund(q, intent, payment.id, Number(pending.amount), pending.reason ?? "other", log.transactionHash);
         return;
       }
 
@@ -177,6 +188,7 @@ export function createIndexer(db: Db, client: PublicClient, config: Config) {
         source,
       );
       await emitEvent(q, intent.merchant_id, "charge.refunded", charge, source);
+      await emailRefund(q, intent, payment.id, amount, reason, log.transactionHash);
     });
   }
 
