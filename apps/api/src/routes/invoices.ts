@@ -2,9 +2,11 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { type Deps, send } from "../app.ts";
 import { invalidRequest, notFound } from "../errors.ts";
+import { queueInvoice } from "../emails.ts";
 import { emitEvent } from "../events.ts";
 import { idempotent } from "../idempotency.ts";
-import { createInvoice, getInvoice, invoicePayments, listInvoices, serializeInvoice } from "../invoices.ts";
+import { amountDue, createInvoice, getInvoice, invoicePayments, listInvoices, serializeInvoice } from "../invoices.ts";
+import { recordAndSendReminder } from "../reminders.ts";
 
 const createBody = z.object({
   customer: z.object({ name: z.string().min(1), email: z.email().optional() }),
@@ -22,6 +24,7 @@ const createBody = z.object({
     .object({ type: z.enum(["percent", "fixed"]), value: z.coerce.number().int().positive() })
     .optional(),
   allow_partial: z.coerce.boolean().default(false),
+  reminders: z.coerce.boolean().default(true),
   notes: z.string().optional(),
   currency: z.enum(["usd", "usdt"]).default("usd"),
 });
@@ -49,6 +52,7 @@ export async function invoiceRoutes(app: FastifyInstance, { db, config }: Deps) 
           dueDate: input.due_date ? new Date(input.due_date * 1000) : undefined,
           lateFee: input.late_fee,
           allowPartial: input.allow_partial,
+          reminders: input.reminders,
           notes: input.notes,
           currency: input.currency,
         });
@@ -86,8 +90,41 @@ export async function invoiceRoutes(app: FastifyInstance, { db, config }: Deps) 
         throw invalidRequest("invoice_unexpected_state", `Can't send an invoice that is ${invoice.status}`);
       }
       await emitEvent(q, merchantId, "invoice.sent", serializeInvoice(invoice, [], config));
+      if (invoice.customer_email) {
+        await queueInvoice(q, config, {
+          merchantId,
+          to: invoice.customer_email,
+          invoiceId: id,
+          number: invoice.number,
+          amount: amountDue(invoice),
+          dueDate: invoice.due_date,
+        });
+      }
     });
     return view(id, merchantId);
+  });
+
+  app.post<{ Params: { id: string } }>("/invoices/:id/remind", async (request) => {
+    const { id } = request.params;
+    const invoice = await getInvoice(db, id, request.merchant.id);
+    if (!invoice) throw notFound("invoice", id);
+    if (!["open", "partially_paid", "overdue"].includes(invoice.status)) {
+      throw invalidRequest("invoice_unexpected_state", `Can't remind for an invoice that is ${invoice.status}`);
+    }
+    if (!invoice.customer_email) throw invalidRequest("customer_email_missing", "This customer has no email on file");
+    await recordAndSendReminder(db, config, invoice, "manual");
+    return view(id, request.merchant.id);
+  });
+
+  app.get<{ Params: { id: string } }>("/invoices/:id/reminders", async (request) => {
+    await view(request.params.id, request.merchant.id);
+    const rows = await db.query("SELECT kind, sent_at FROM reminders WHERE invoice_id = $1 ORDER BY sent_at DESC, id", [
+      request.params.id,
+    ]);
+    return {
+      object: "list",
+      data: rows.map((row) => ({ kind: row.kind, sent_at: Math.floor(row.sent_at.getTime() / 1000) })),
+    };
   });
 
   app.post<{ Params: { id: string } }>("/invoices/:id/void", async (request) => {

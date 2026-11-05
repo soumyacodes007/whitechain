@@ -30,6 +30,15 @@ export async function expireSessions(db: Db, config: Config) {
   }
 }
 
+/** A reorg can drop a transaction after we saw it. If it never confirms, the customer can pay again. */
+export async function releaseStuckProcessing(db: Db) {
+  await db.query(
+    `UPDATE payment_intents i SET status = 'requires_payment_method', processing_at = NULL
+     WHERE i.status = 'processing' AND i.processing_at < now() - interval '5 minutes'
+       AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.intent_id = i.id)`,
+  );
+}
+
 /** Subscription sessions have no intent, so they expire on their own timer. */
 export async function expireSubscriptionSessions(db: Db) {
   await db.query(

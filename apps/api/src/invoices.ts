@@ -22,6 +22,7 @@ export type InvoiceRow = {
   total: string | number;
   currency: string;
   notes: string | null;
+  reminders: boolean;
   issued_at: Date | null;
   created_at: Date;
 };
@@ -56,6 +57,7 @@ export async function createInvoice(
     dueDate?: Date;
     lateFee?: LateFee;
     allowPartial: boolean;
+    reminders?: boolean;
     notes?: string;
     currency: string;
   },
@@ -80,8 +82,8 @@ export async function createInvoice(
   const id = newId("in");
   await q.query(
     `INSERT INTO invoices
-       (id, merchant_id, number, customer_id, line_items, due_date, late_fee, allow_partial, total, currency, notes)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11)`,
+       (id, merchant_id, number, customer_id, line_items, due_date, late_fee, allow_partial, total, currency, notes, reminders)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10, $11, $12)`,
     [
       id,
       merchantId,
@@ -94,6 +96,7 @@ export async function createInvoice(
       total,
       input.currency,
       input.notes ?? null,
+      input.reminders ?? true,
     ],
   );
   return (await getInvoice(q, id))!;

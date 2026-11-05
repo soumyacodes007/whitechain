@@ -3,10 +3,12 @@ import { buildApp } from "./app.ts";
 import { createChainWriter } from "./chain.ts";
 import { loadConfig } from "./config.ts";
 import { createDb } from "./db.ts";
+import { deliverEmails } from "./emails.ts";
 import { loadEnv } from "./env.ts";
 import { createIndexer } from "./indexer.ts";
+import { sendDueReminders } from "./reminders.ts";
 import { chargeDue } from "./subscriptions.ts";
-import { expireSessions, expireSubscriptionSessions, markInvoicesOverdue } from "./sweeps.ts";
+import { expireSessions, expireSubscriptionSessions, markInvoicesOverdue, releaseStuckProcessing } from "./sweeps.ts";
 import { dispatchDue } from "./webhooks.ts";
 
 loadEnv();
@@ -32,15 +34,18 @@ const client = createPublicClient({ transport: http(config.rpcUrl, { retryCount:
 const indexer = createIndexer(db, client, config);
 
 const writer = createChainWriter(client, config);
-const app = buildApp({ db, config, client, writer });
+const app = buildApp({ db, config, client, writer, rateLimit: true });
 await app.listen({ port: config.port, host: "0.0.0.0" });
 console.log(`SettleKit API on http://localhost:${config.port} (${config.databaseUrl ? "Postgres" : "embedded Postgres"})`);
 
 loop("indexer", indexer.tick);
 loop("webhooks", () => dispatchDue(db));
 loop("keeper", () => chargeDue(db, writer));
+loop("emails", () => deliverEmails(db, config));
 loop("sweeps", async () => {
   await expireSessions(db, config);
   await expireSubscriptionSessions(db);
   await markInvoicesOverdue(db, config);
+  await releaseStuckProcessing(db);
+  await sendDueReminders(db, config);
 });
