@@ -18,6 +18,11 @@ const schema = z.object({
   CHECKOUT_URL: z.preprocess(blankToUndefined, z.url().default("http://localhost:3000")),
   DEPLOYER_PRIVATE_KEY: z.string().optional(),
   INTENT_SIGNER_PRIVATE_KEY: z.preprocess(blankToUndefined, z.string().optional()),
+  OPERATOR_PRIVATE_KEY: z.preprocess(blankToUndefined, z.string().optional()),
+  CHAIN_ID: z.preprocess(blankToUndefined, z.coerce.number().default(deployment.chainId)),
+  PAYMENTS_ADDRESS: z.preprocess(blankToUndefined, z.string().default(deployment.SettleKitPayments.address)),
+  USDT_ADDRESS: z.preprocess(blankToUndefined, z.string().default(deployment.usdt)),
+  SUBSCRIPTIONS_ADDRESS: z.preprocess(blankToUndefined, z.string().default(deployment.SettleKitSubscriptions.address)),
   INDEXER_START_BLOCK: z.preprocess(
     blankToUndefined,
     z.coerce.bigint().default(BigInt(deployment.SettleKitPayments.block)),
@@ -34,7 +39,12 @@ export type Config = {
   chainId: number;
   paymentsAddress: Address;
   usdtAddress: Address;
+  subscriptionsAddress: Address;
+  permitName: string;
+  permitVersion: string;
   signerKey: Hex;
+  /** Sends refunds, gasless payments and renewals. Holds gas only, never customer funds. */
+  operatorKey: Hex;
   startBlock: bigint;
 };
 
@@ -50,10 +60,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rpcUrl: parsed.WHITECHAIN_RPC_URL,
     explorerUrl: parsed.EXPLORER_URL,
     checkoutUrl: parsed.CHECKOUT_URL,
-    chainId: deployment.chainId,
-    paymentsAddress: deployment.SettleKitPayments.address,
-    usdtAddress: deployment.usdt,
+    chainId: parsed.CHAIN_ID,
+    paymentsAddress: parsed.PAYMENTS_ADDRESS as Address,
+    usdtAddress: parsed.USDT_ADDRESS as Address,
+    subscriptionsAddress: parsed.SUBSCRIPTIONS_ADDRESS as Address,
+    permitName: "Tether USD",
+    permitVersion: "1",
     signerKey: signerKey as Hex,
+    operatorKey: (parsed.OPERATOR_PRIVATE_KEY ?? signerKey) as Hex,
     startBlock: parsed.INDEXER_START_BLOCK,
   };
 }

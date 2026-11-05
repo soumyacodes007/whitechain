@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { Db } from "./db.ts";
+import { newId } from "./ids.ts";
 
 const MINUTE = 60;
 const HOUR = 60 * MINUTE;
@@ -41,9 +42,12 @@ async function claimDue(db: Db, limit: number) {
   );
 }
 
+const MAX_LOGGED_BODY = 2_000;
+
 async function send(delivery: Claimed) {
   const body = JSON.stringify(delivery.payload);
   const signature = signatureHeader(body, delivery.secret);
+  const started = Date.now();
   try {
     const response = await fetch(delivery.url, {
       method: "POST",
@@ -52,9 +56,14 @@ async function send(delivery: Claimed) {
       redirect: "manual",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    return response.status;
-  } catch {
-    return null;
+    const text = (await response.text().catch(() => "")).slice(0, MAX_LOGGED_BODY);
+    return { statusCode: response.status, text, duration: Date.now() - started };
+  } catch (error) {
+    return {
+      statusCode: null,
+      text: error instanceof Error ? error.message : "Request failed",
+      duration: Date.now() - started,
+    };
   }
 }
 
@@ -64,7 +73,12 @@ export async function dispatchDue(db: Db, limit = 20) {
 
   await Promise.all(
     due.map(async (delivery) => {
-      const statusCode = await send(delivery);
+      const { statusCode, text, duration } = await send(delivery);
+      await db.query(
+        `INSERT INTO webhook_attempts (id, delivery_id, attempt, status_code, duration_ms, response_body)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [newId("wha"), delivery.id, delivery.attempt, statusCode, duration, text],
+      );
 
       if (statusCode !== null && statusCode >= 200 && statusCode < 300) {
         await db.query(

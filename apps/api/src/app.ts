@@ -1,13 +1,23 @@
 import Fastify, { type FastifyReply } from "fastify";
 import qs from "qs";
+import type { PublicClient } from "viem";
 import { z } from "zod";
+import type { ChainWriter } from "./chain.ts";
 import type { Config } from "./config.ts";
 import type { Db } from "./db.ts";
 import { ApiError, invalidRequest } from "./errors.ts";
 import { type Merchant, merchantForSecretKey } from "./merchants.ts";
+import { checkoutSessionRoutes } from "./routes/checkoutSessions.ts";
+import { dashboardRoutes } from "./routes/dashboard.ts";
 import { eventRoutes } from "./routes/events.ts";
+import { invoiceRoutes } from "./routes/invoices.ts";
+import { paymentLinkRoutes } from "./routes/paymentLinks.ts";
 import { paymentIntentRoutes } from "./routes/paymentIntents.ts";
 import { publicRoutes } from "./routes/public.ts";
+import { refundRoutes } from "./routes/refunds.ts";
+import { reportRoutes } from "./routes/reports.ts";
+import { stripeCompatRoutes } from "./routes/stripeCompat.ts";
+import { subscriptionRoutes } from "./routes/subscriptions.ts";
 import { webhookEndpointRoutes } from "./routes/webhookEndpoints.ts";
 
 declare module "fastify" {
@@ -16,7 +26,7 @@ declare module "fastify" {
   }
 }
 
-export type Deps = { db: Db; config: Config };
+export type Deps = { db: Db; config: Config; client?: PublicClient; writer?: ChainWriter };
 
 export function send(reply: FastifyReply, result: { status: number; body: unknown; replayed?: boolean }) {
   if (result.replayed) reply.header("idempotent-replayed", "true");
@@ -63,6 +73,14 @@ export function buildApp(deps: Deps) {
     });
 
     v1.register(paymentIntentRoutes, deps);
+    v1.register(checkoutSessionRoutes, deps);
+    v1.register(paymentLinkRoutes, deps);
+    v1.register(invoiceRoutes, deps);
+    v1.register(refundRoutes, deps);
+    v1.register(subscriptionRoutes, deps);
+    v1.register(dashboardRoutes, deps);
+    v1.register(reportRoutes, deps);
+    v1.register(stripeCompatRoutes, deps);
     v1.register(eventRoutes, deps);
     v1.register(webhookEndpointRoutes, deps);
   }, { prefix: "/v1" });
