@@ -29,8 +29,14 @@ Running notes from building SettleKit on Whitechain Sepolia.
   the Foundry project sits in a subfolder of the repo. Adding the libraries with `git submodule add` works.
   This is a Foundry issue rather than a Whitechain one.
 
+## Deployment
+
+- Explorer is Blockscout at `https://explorer.testnet.whitechain.io`.
+- Verification worked first try with `forge verify-contract --verifier blockscout` and needs no API key.
+  The verifier URL must be `https://explorer.testnet.whitechain.io/api/`.
+- Deploying both contracts used about 2.47M gas and cost about 0.0124 WBT.
+- The faucet gave 2 WBT for the day, which is plenty for this kind of app.
+
 ## Still unknown
 
-- Which contract verification method the explorer supports (Etherscan-compatible API, Sourcify or manual).
-- The explorer URL for chain 1874. Hosts could not be confirmed from this network yet.
 - How to get test USDT. The implementation has `mint(address,uint256)`, but who may call it is unconfirmed.

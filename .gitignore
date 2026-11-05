@@ -7,3 +7,7 @@ node_modules/
 contracts/out/
 contracts/cache/
 contracts/broadcast/
+
+# API
+apps/api/data/
+dist/

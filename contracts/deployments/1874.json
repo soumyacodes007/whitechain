@@ -1,0 +1,16 @@
+{
+  "chainId": 1874,
+  "rpc": "https://rpc.testnet.whitechain.io",
+  "explorer": "https://explorer.testnet.whitechain.io",
+  "usdt": "0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7",
+  "SettleKitPayments": {
+    "address": "0xD59EDe989E27d8CaAEebb8305897d51d61Dc299d",
+    "tx": "0xb7f11b34b4c56e7847b249ee2ae3fc295c09abcf5af959bd5b600ad1c3a41510",
+    "block": 12308193
+  },
+  "SettleKitSubscriptions": {
+    "address": "0x5C648cc785526432bec6d6B3C5Fb729cA6311aD6",
+    "tx": "0xbb55531b2f17aede4cea7490da098649196a0efbf6a1193c356d0fdf5c4eb2f7",
+    "block": 12308196
+  }
+}
