@@ -1,10 +1,11 @@
 import { ActionForm, Submit } from "../../../ActionForm";
-import { invoiceAction } from "../../../actions";
-import { api, Badge, date, Title, TxLink, usdt } from "../../../lib";
+import { duplicateInvoice, invoiceAction, remindInvoice } from "../../../actions";
+import { api, Badge, date, label, Title, TxLink, usdt } from "../../../lib";
 
 export default async function InvoicePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const invoice = await api(`/invoices/${id}`);
+  const [invoice, reminders] = await Promise.all([api(`/invoices/${id}`), api(`/invoices/${id}/reminders`)]);
+  const remindable = ["open", "partially_paid", "overdue"].includes(invoice.status);
   const draft = invoice.status === "draft";
   const voidable = ["draft", "open", "overdue"].includes(invoice.status) && invoice.amount_paid === 0;
 
@@ -47,6 +48,14 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
               <Submit className="secondary">Void</Submit>
             </ActionForm>
           )}
+          {remindable && (
+            <ActionForm action={remindInvoice.bind(null, id)} className="inline">
+              <Submit className="secondary">Send reminder now</Submit>
+            </ActionForm>
+          )}
+          <ActionForm action={duplicateInvoice.bind(null, id)} className="inline">
+            <Submit className="secondary">Duplicate</Submit>
+          </ActionForm>
           {!draft && (
             <a className="secondary" href={invoice.hosted_invoice_url} target="_blank" rel="noreferrer">
               Open customer page
@@ -54,7 +63,18 @@ export default async function InvoicePage({ params }: { params: Promise<{ id: st
           )}
         </div>
         {!draft && <div className="mono">{invoice.hosted_invoice_url}</div>}
-        {draft && <p className="muted">Sending makes the invoice payable. Emails aren't sent yet, so share the link.</p>}
+        {draft && <p className="muted">Sending makes the invoice payable and emails it to the customer.</p>}
+      </section>
+
+      <section className="card">
+        <h2>Reminders sent</h2>
+        {reminders.data.length === 0 && <p className="muted">None yet.</p>}
+        {reminders.data.map((reminder: any, index: number) => (
+          <div className="row" key={index}>
+            <span>{label(reminder.kind)}</span>
+            <span className="muted">{new Date(reminder.sent_at * 1000).toLocaleString("en-GB")}</span>
+          </div>
+        ))}
       </section>
 
       <section className="card">

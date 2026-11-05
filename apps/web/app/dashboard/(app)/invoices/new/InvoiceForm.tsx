@@ -71,6 +71,9 @@ export function InvoiceForm() {
           <label className="check">
             <input name="allow_partial" type="checkbox" /> Allow partial payments
           </label>
+          <label className="check">
+            <input name="reminders" type="checkbox" defaultChecked /> Send due date reminders
+          </label>
           <label className="field">
             Notes
             <input name="notes" />

@@ -1,7 +1,7 @@
 "use client";
 
 import { friendlyError, isOnChain, switchToChain, usdtAbi } from "@settlekit/react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { type Address, createPublicClient, createWalletClient, custom, http, parseAbi } from "viem";
 
 const subscriptionsAbi = parseAbi(["function cancel(uint256 subId)"]);
@@ -13,11 +13,16 @@ const date = (seconds: number) =>
   new Date(seconds * 1000).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 const label = (status: string) => status.replaceAll("_", " ").replace(/^./, (c) => c.toUpperCase());
 
-function SubscriptionCard({ sub, data, wallet, onChange }: { sub: any; data: any; wallet: Address; onChange: () => void }) {
+function SubscriptionCard({ sub, data, onChange }: { sub: any; data: any; onChange: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [allowance, setAllowance] = useState<bigint>();
-  const client = () => createWalletClient({ account: wallet, transport: custom(window.ethereum!) });
+  // A customer who came in by email link hasn't connected a wallet until they act on a subscription.
+  const client = async () => {
+    if (!window.ethereum) throw new Error("No wallet found");
+    const [account] = await window.ethereum.request({ method: "eth_requestAccounts" });
+    return createWalletClient({ account: account as Address, transport: custom(window.ethereum) });
+  };
   const reader = createPublicClient({ transport: http(data.rpc_url) });
   const contract = sub.settlekit.contract as Address;
 
@@ -25,6 +30,7 @@ function SubscriptionCard({ sub, data, wallet, onChange }: { sub: any; data: any
     setBusy(true);
     setError(undefined);
     try {
+      if (!window.ethereum) throw new Error("No wallet found");
       if (!(await isOnChain(data.chain_id))) {
         await switchToChain({ chain_id: data.chain_id, rpc_url: data.rpc_url, explorer_url: "" });
       }
@@ -37,7 +43,7 @@ function SubscriptionCard({ sub, data, wallet, onChange }: { sub: any; data: any
 
   const cancel = () =>
     run(async () => {
-      const hash = await client().writeContract({
+      const hash = await (await client()).writeContract({
         chain: null,
         address: contract,
         abi: subscriptionsAbi,
@@ -50,7 +56,7 @@ function SubscriptionCard({ sub, data, wallet, onChange }: { sub: any; data: any
 
   const updateAllowance = () =>
     run(async () => {
-      const hash = await client().writeContract({
+      const hash = await (await client()).writeContract({
         chain: null,
         address: data.token,
         abi: usdtAbi,
@@ -63,7 +69,12 @@ function SubscriptionCard({ sub, data, wallet, onChange }: { sub: any; data: any
 
   const checkAllowance = async () =>
     setAllowance(
-      await reader.readContract({ address: data.token, abi: usdtAbi, functionName: "allowance", args: [wallet, contract] }),
+      await reader.readContract({
+        address: data.token,
+        abi: usdtAbi,
+        functionName: "allowance",
+        args: [sub.settlekit.wallet as Address, contract],
+      }),
     );
 
   const live = sub.status === "active" || sub.status === "past_due";
@@ -108,9 +119,10 @@ function SubscriptionCard({ sub, data, wallet, onChange }: { sub: any; data: any
   );
 }
 
-export function Portal({ apiUrl }: { apiUrl: string }) {
-  const [wallet, setWallet] = useState<Address>();
-  const [token, setToken] = useState<string>();
+export function Portal({ apiUrl, initialToken }: { apiUrl: string; initialToken?: string }) {
+  const [token, setToken] = useState(initialToken);
+  const [email, setEmail] = useState("");
+  const [linkSent, setLinkSent] = useState(false);
   const [data, setData] = useState<any>();
   const [tab, setTab] = useState<(typeof TABS)[number]>("Payments");
   const [error, setError] = useState<string>();
@@ -127,6 +139,22 @@ export function Portal({ apiUrl }: { apiUrl: string }) {
     },
     [apiUrl],
   );
+
+  useEffect(() => {
+    if (initialToken) load(initialToken).catch(() => setError("That link has expired. Ask for a new one below."));
+  }, [initialToken, load]);
+
+  const sendLink = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setError(undefined);
+    const response = await fetch(`${apiUrl}/public/portal/magic`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    }).catch(() => null);
+    if (response?.ok) setLinkSent(true);
+    else setError("That didn't work. Please try again in a minute.");
+  };
 
   const signIn = async () => {
     setError(undefined);
@@ -146,7 +174,6 @@ export function Portal({ apiUrl }: { apiUrl: string }) {
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error?.message ?? "Sign-in failed");
-      setWallet(address as Address);
       setToken(json.token);
       await load(json.token);
     } catch (cause) {
@@ -155,14 +182,26 @@ export function Portal({ apiUrl }: { apiUrl: string }) {
     setBusy(false);
   };
 
-  if (!data || !token || !wallet) {
+  if (!data || !token) {
     return (
       <section className="card">
-        <p className="muted">Sign with the wallet you paid from to see your payments, refunds and subscriptions.</p>
+        <p className="muted">Sign in to see your payments, refunds and subscriptions.</p>
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy} onClick={signIn}>
           {busy ? "Check your wallet…" : "Sign in with wallet"}
         </button>
+        <form className="filters" onSubmit={sendLink}>
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@example.com"
+            aria-label="Email address"
+          />
+          <button className="secondary">Email me a link</button>
+        </form>
+        {linkSent && <p className="success">If that email has payments with us, a sign-in link is on its way.</p>}
       </section>
     );
   }
@@ -219,7 +258,7 @@ export function Portal({ apiUrl }: { apiUrl: string }) {
             </section>
           )}
           {data.subscriptions.map((sub: any) => (
-            <SubscriptionCard key={sub.id} sub={sub} data={data} wallet={wallet} onChange={refresh} />
+            <SubscriptionCard key={sub.id} sub={sub} data={data} onChange={refresh} />
           ))}
         </>
       )}
