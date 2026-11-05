@@ -1,0 +1,13 @@
+{
+  "name": "pixelforge-store",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx server.ts"
+  },
+  "dependencies": {
+    "@settlekit/node": "*",
+    "express": "^4.17.1"
+  }
+}

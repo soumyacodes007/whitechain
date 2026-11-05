@@ -2,8 +2,8 @@
   "name": "@settlekit/web",
   "private": true,
   "scripts": {
-    "predev": "node -e \"require('fs').copyFileSync('../../packages/button/button.js','public/button.js')\"",
-    "prebuild": "node -e \"require('fs').copyFileSync('../../packages/button/button.js','public/button.js')\"",
+    "predev": "node -e \"const fs=require('fs');fs.mkdirSync('public',{recursive:true});fs.copyFileSync('../../packages/button/button.js','public/button.js')\"",
+    "prebuild": "node -e \"const fs=require('fs');fs.mkdirSync('public',{recursive:true});fs.copyFileSync('../../packages/button/button.js','public/button.js')\"",
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",

@@ -21,7 +21,7 @@ import { SettleKit } from "../../../packages/node/src/index.ts";
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const OUT = process.env.E2E_OUT ?? join(ROOT, "apps/web/e2e/out");
 
-const RPC_PORT = 18600;
+const RPC_PORT = 38600;
 const API_PORT = 4100;
 const WEB_PORT = 3100;
 const CHAIN_ID = 31337;
@@ -90,8 +90,13 @@ async function waitFor(url: string, name: string) {
   throw new Error(`${name} did not start`);
 }
 
-function start(command: string, args: string[], env: Record<string, string>, cwd = ROOT) {
-  const child = spawn(command, args, { cwd, env: { ...process.env, ...env }, stdio: "inherit" });
+function start(command: string, args: string[], env: Record<string, string>, cwd = ROOT, output?: string[]) {
+  const child = spawn(command, args, {
+    cwd,
+    env: { ...process.env, ...env },
+    stdio: output ? ["ignore", "pipe", "inherit"] : "inherit",
+  });
+  child.stdout?.on("data", (chunk) => output?.push(String(chunk)));
   processes.push(child);
 }
 
@@ -203,7 +208,7 @@ async function main() {
     functionName: "registerMerchant",
     args: [merchant.address, merchant.address, deployer.address],
   });
-  await write(deployer, { address: usdt, abi: usdtAbi, functionName: "mint", args: [customer.address, 1_500_000000n] });
+  await write(deployer, { address: usdt, abi: usdtAbi, functionName: "mint", args: [customer.address, 5_000_000000n] });
   await write(deployer, { address: usdt, abi: usdtAbi, functionName: "mint", args: [merchant.address, 1_000_000000n] });
   await write(deployer, { address: usdt, abi: usdtAbi, functionName: "mint", args: [gaslessPayer.address, 100_000000n] });
   await write(merchant, { address: usdt, abi: usdtAbi, functionName: "approve", args: [payments, 2n ** 96n] });
@@ -232,7 +237,8 @@ async function main() {
   const secretKey = /Secret key \(shown once\): (\S+)/.exec(seeded.stdout)?.[1];
   assert(secretKey, `seed failed: ${seeded.stderr}`);
 
-  start(process.execPath, [tsx, "src/index.ts"], apiEnv, apiDir);
+  const apiOutput: string[] = [];
+  start(process.execPath, [tsx, "src/index.ts"], apiEnv, apiDir, apiOutput);
   await waitFor(`${API}/health`, "API");
   start(process.execPath, [join(ROOT, "node_modules/next/dist/bin/next"), "start", "-p", String(WEB_PORT)], {
     API_URL: API,
@@ -273,13 +279,16 @@ async function main() {
     await page.getByText("Brand Kit").waitFor();
     await page.getByText("PixelForge Studio").waitFor();
     await page.getByText("Test mode · Whitechain Sepolia").waitFor();
+    await page.getByLabel("Email for your receipt").fill("mark@example.com");
+    await page.getByLabel("Email for your receipt").blur();
+    await page.getByText("We'll send your receipt there").waitFor();
     await shot(page, "1-checkout");
 
     await page.getByRole("button", { name: "Connect wallet" }).click();
     await page.getByRole("button", { name: "Switch to Whitechain" }).click();
     const payButton = page.getByRole("button", { name: "Pay 500.00 USDT" });
     await payButton.waitFor();
-    await page.getByText("1500.00 USDT").waitFor();
+    await page.getByText("5000.00 USDT").waitFor();
 
     wallet.state.rejectNext = true;
     await payButton.click();
@@ -304,6 +313,13 @@ async function main() {
 
     const final = await kit.checkout.sessions.retrieve(session.id);
     assert(final.status === "complete" && final.payment_status === "paid", "session completed");
+
+    const [pdf] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: "Download receipt PDF" }).click()]);
+    assert(readFileSync(await pdf.path()).subarray(0, 4).toString() === "%PDF", "receipt PDF downloads");
+
+    await page.getByLabel("Email address").fill("copy@example.com");
+    await page.getByRole("button", { name: "Email me this receipt" }).click();
+    await page.getByText("Sent.").waitFor();
   });
 
   await step("dashboard: sign in, see the payment, refund part of it, receipt updates", async () => {
@@ -514,6 +530,81 @@ async function main() {
       const response = await page.goto(`${WEB}/dashboard/${path}`);
       assert(response?.ok(), `/dashboard/${path} loads`);
     }
+  });
+
+  await step("email: outbox, reminders and magic link sign-in", async () => {
+    const authed = { authorization: `Bearer ${secretKey}` };
+    const emails = async () => (await (await fetch(`${API}/v1/emails`, { headers: authed })).json()).data;
+
+    const receipt = (await emails()).find((email: any) => email.kind === "receipt" && email.to_address === "mark@example.com");
+    assert(receipt?.status === "logged", "receipt went through the outbox");
+
+    const invoice = await kit.invoices.create({
+      customer: { name: "Mark Rivera", email: "mark@example.com" },
+      line_items: [{ description: "Audit", quantity: 1, unit_amount: 10000 }],
+      due_date: Math.floor(Date.now() / 1000) + 86_400,
+    });
+    await kit.invoices.send(invoice.id);
+
+    await page.goto(`${WEB}/dashboard/invoices/${invoice.id}`);
+    await page.getByRole("button", { name: "Send reminder now" }).click();
+    await page.getByRole("status").getByText("Reminder sent").waitFor();
+    await shot(page, "21-dashboard-reminder");
+
+    await page.goto(`${WEB}/portal`);
+    await page.getByLabel("Email address").fill("mark@example.com");
+    await page.getByRole("button", { name: "Email me a link" }).click();
+    await page.getByText("a sign-in link is on its way").waitFor();
+
+    let link = "";
+    for (let i = 0; i < 20 && !link; i++) {
+      link = /http[^\s]+token=[^\s]+/.exec(apiOutput.join(""))?.[0] ?? "";
+      if (!link) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    assert(link, "magic link was issued");
+    assert(!(await emails()).some((email: any) => email.kind === "magic_link"), "merchants can't read sign-in links");
+    await page.goto(link);
+    await page.getByRole("button", { name: "Refunds" }).waitFor();
+  });
+
+  await step("PixelForge demo store sells with 20 lines or fewer", async () => {
+    const storeDir = join(ROOT, "examples/pixelforge-store");
+    const source = readFileSync(join(storeDir, "server.ts"), "utf8").replaceAll("\r\n", "\n");
+    const integration = source.split("// SETTLEKIT INTEGRATION START\n")[1]!.split("// SETTLEKIT INTEGRATION END")[0]!;
+    const lines = integration.split("\n").filter((line) => line.trim() !== "").length;
+    console.log(`    integration lines: ${lines}`);
+
+    const webhook = await fetch(`${API}/v1/webhook_endpoints`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secretKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ url: "http://localhost:4300/webhooks", enabled_events: ["checkout.session.completed"] }),
+    }).then((response) => response.json());
+    const link = await kit.paymentLinks.create({ name: "Logo Pack", unit_amount: 4900 });
+
+    start(process.execPath, [tsx, "server.ts"], {
+      SETTLEKIT_SECRET_KEY: secretKey!,
+      SETTLEKIT_WEBHOOK_SECRET: webhook.secret,
+      SETTLEKIT_API_URL: API,
+      SETTLEKIT_LINK: link.code,
+      CHECKOUT_ORIGIN: WEB,
+    }, storeDir);
+    await waitFor("http://localhost:4300", "store");
+
+    await page.goto("http://localhost:4300");
+    await page.getByRole("link", { name: "Pay with USDT" }).waitFor();
+    await shot(page, "22-pixelforge-store");
+    await page.getByRole("button", { name: "Buy Brand Kit" }).click();
+    await page.getByRole("button", { name: "Connect wallet" }).click();
+    await page.getByRole("button", { name: "Pay 500.00 USDT" }).click();
+    await page.getByTestId("paid").waitFor({ timeout: 30_000 });
+
+    let status = "";
+    for (let i = 0; i < 30 && status !== "paid"; i++) {
+      status = (await (await fetch("http://localhost:4300/orders/PF-1042")).json()).status;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    assert(status === "paid", "the store fulfilled the order from its webhook");
+    assert(lines <= 20, `integration is ${lines} lines`);
   });
 
   await step("Stripe's official sample app runs with one changed line", async () => {
