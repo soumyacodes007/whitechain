@@ -23,6 +23,7 @@ export type IntentRow = {
   metadata: Record<string, string>;
   description: string | null;
   source: string;
+  invoice_id: string | null;
   expires_at: Date;
   deadline: string | number;
   signature: Hex;
