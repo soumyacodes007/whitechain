@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { dispatchDue, RETRY_DELAYS_SECONDS } from "../src/webhooks.ts";
 import { customer, useChain } from "./harness.ts";
 
-const chain = useChain(18546);
+const chain = useChain(38546);
 
 const newIntent = async (amount: number, orderId: string) =>
   (await chain.api("POST", "/v1/payment_intents", { amount, currency: "usd", metadata: { orderId } })).json();

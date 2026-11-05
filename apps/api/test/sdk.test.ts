@@ -3,8 +3,9 @@ import { SettleKit, SettleKitError } from "@settlekit/node";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.ts";
 import type { Config } from "../src/config.ts";
-import { createDb, type Db } from "../src/db.ts";
+import type { Db } from "../src/db.ts";
 import { createMerchant } from "../src/merchants.ts";
+import { createTestDb } from "./testDb.ts";
 import { signatureHeader } from "../src/webhooks.ts";
 
 const config: Config = {
@@ -32,7 +33,7 @@ describe("@settlekit/node against the real API", () => {
   let kit: SettleKit;
 
   beforeAll(async () => {
-    db = await createDb({});
+    db = await createTestDb();
     app = buildApp({ db, config });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const { port } = app.server.address() as AddressInfo;

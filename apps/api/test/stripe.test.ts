@@ -5,7 +5,7 @@ import { dispatchDue } from "../src/webhooks.ts";
 import { useChain } from "./harness.ts";
 
 // Uses the official stripe package with only the host changed, which is the claim being tested.
-const chain = useChain(18548);
+const chain = useChain(38548);
 let stripe: Stripe;
 
 beforeAll(async () => {

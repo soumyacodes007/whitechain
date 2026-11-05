@@ -2,12 +2,15 @@ import ExcelJS from "exceljs";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { parseSignature, type Hex } from "viem";
 import { beforeAll, describe, expect, it } from "vitest";
+import { deliverEmails } from "../src/emails.ts";
+import { reminderKind, sendDueReminders } from "../src/reminders.ts";
 import { signInMessage } from "../src/routes/portal.ts";
 import { chargeDue } from "../src/subscriptions.ts";
+import { releaseStuckProcessing } from "../src/sweeps.ts";
 import { dispatchDue } from "../src/webhooks.ts";
 import { customer, useChain } from "./harness.ts";
 
-const chain = useChain(18547);
+const chain = useChain(38547);
 
 const confirm = async () => {
   await chain.mine();
@@ -499,5 +502,163 @@ describe("customer portal", () => {
 
     const past = Math.floor(Date.now() / 1000) - 10;
     expect((await signIn(customer, customer.address, past)).json().error.code).toBe("sign_in_expired");
+  });
+});
+
+describe("emails and reminders", () => {
+  const emails = (kind: string, to: string) =>
+    chain.db().query("SELECT * FROM emails WHERE kind = $1 AND to_address = $2 ORDER BY created_at", [kind, to]);
+
+  const invoice = async (email: string, dueInDays: number) => {
+    const created = (
+      await chain.api("POST", "/v1/invoices", {
+        customer: { name: "Mark", email },
+        line_items: [{ description: "Design", quantity: 1, unit_amount: 10000 }],
+        due_date: Math.floor(Date.now() / 1000) + 86_400 * dueInDays,
+      })
+    ).json();
+    await chain.api("POST", `/v1/invoices/${created.id}/send`, {});
+    return created;
+  };
+
+  it("emails an invoice when it is sent", async () => {
+    await invoice("sent@example.com", 14);
+    const [email] = await emails("invoice", "sent@example.com");
+    expect(email.subject).toContain("Invoice INV-");
+    expect(email.body).toContain("/i/in_");
+  });
+
+  it("picks the right reminder stage", () => {
+    const now = new Date("2026-11-10T12:00:00Z");
+    const inDays = (days: number) => new Date(now.getTime() + days * 86_400_000);
+    expect(reminderKind(inDays(5), now)).toBeNull();
+    expect(reminderKind(inDays(2.5), now)).toBe("before_due");
+    expect(reminderKind(inDays(0), now)).toBe("due_today");
+    expect(reminderKind(inDays(-1), now)).toBe("due_today");
+    expect(reminderKind(inDays(-3.5), now)).toBe("overdue");
+  });
+
+  it("logs a reminder for an invoice due tomorrow, and sends it once", async () => {
+    const created = await invoice("soon@example.com", 1);
+    await sendDueReminders(chain.db(), chain.config());
+    await sendDueReminders(chain.db(), chain.config());
+
+    expect(await emails("reminder", "soon@example.com")).toHaveLength(1);
+    const log = (await chain.api("GET", `/v1/invoices/${created.id}/reminders`)).json().data;
+    expect(log).toHaveLength(1);
+    expect(log[0].kind).toBe("before_due");
+    expect(log[0].sent_at).toBeGreaterThan(0);
+  });
+
+  it("lets a merchant send one by hand, and honours the switch", async () => {
+    const created = await invoice("manual@example.com", 30);
+    await chain.api("POST", `/v1/invoices/${created.id}/remind`, {});
+    await chain.api("POST", `/v1/invoices/${created.id}/remind`, {});
+    expect(await emails("reminder", "manual@example.com")).toHaveLength(2);
+
+    await chain.api("POST", "/v1/account", { reminders_enabled: false });
+    await invoice("off@example.com", 1);
+    await sendDueReminders(chain.db(), chain.config());
+    expect(await emails("reminder", "off@example.com")).toHaveLength(0);
+    await chain.api("POST", "/v1/account", { reminders_enabled: true });
+  });
+
+  it("stops reminding once an invoice is paid", async () => {
+    const created = await invoice("paid@example.com", 1);
+    const { client_secret } = (
+      await chain.app().inject({ method: "POST", url: `/public/invoices/${created.id}/pay`, payload: {} })
+    ).json();
+    await chain.pay(client_secret);
+    await confirm();
+    await sendDueReminders(chain.db(), chain.config());
+    expect(await emails("reminder", "paid@example.com")).toHaveLength(0);
+    expect(await emails("receipt", "paid@example.com")).toHaveLength(1);
+  });
+
+  it("sends a checkout receipt and a refund notice to the email given at checkout", async () => {
+    const session = (
+      await chain.api("POST", "/v1/checkout/sessions", {
+        line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: 900, product_data: { name: "Kit" } } }],
+      })
+    ).json();
+    await chain.app().inject({
+      method: "POST",
+      url: `/public/checkout/${session.id}/email`,
+      payload: { email: "buyer@example.com" },
+    });
+    const { intent } = (await chain.app().inject({ url: `/public/checkout/${session.id}` })).json();
+    await chain.pay(intent.client_secret);
+    await confirm();
+    expect(await emails("receipt", "buyer@example.com")).toHaveLength(1);
+
+    await refund({ payment_intent: session.payment_intent, amount: 100 });
+    await confirm();
+    const [notice] = await emails("refund", "buyer@example.com");
+    expect(notice.subject).toContain("1.00 USDT");
+  });
+
+  it("marks mail as logged when no provider is configured, so nothing is stuck", async () => {
+    await deliverEmails(chain.db(), chain.config(), 500);
+    const [{ pending }] = await chain.db().query("SELECT count(*)::int AS pending FROM emails WHERE status = 'pending'");
+    expect(pending).toBe(0);
+  });
+
+  it("gives every payer a customer record with totals", async () => {
+    const rows = (await chain.api("GET", "/v1/customers")).json().data;
+    const buyer = rows.find((row: any) => row.email === "buyer@example.com");
+    // This wallet paid throughout the suite, and all of it belongs to one customer.
+    expect(buyer.paid).toBeGreaterThanOrEqual(900);
+    expect(buyer.refunded).toBeGreaterThanOrEqual(100);
+    expect(buyer.wallets).toEqual([customer.address]);
+  });
+
+  it("signs in by magic link without revealing who is a customer", async () => {
+    const ask = (email: string) =>
+      chain.app().inject({ method: "POST", url: "/public/portal/magic", payload: { email } });
+    expect((await ask("nobody@example.com")).json()).toEqual({ ok: true });
+    expect(await emails("magic_link", "nobody@example.com")).toHaveLength(0);
+
+    await ask("buyer@example.com");
+    const [link] = await emails("magic_link", "buyer@example.com");
+    const token = /token=(\S+)/.exec(link.body)![1];
+    const portal = await chain.app().inject({ url: "/public/portal", headers: { authorization: `Bearer ${token}` } });
+    expect(portal.statusCode).toBe(200);
+    expect(portal.json().payments.length).toBeGreaterThan(0);
+  });
+
+  it("emails a receipt on request and serves a receipt PDF", async () => {
+    const intent = await paidIntent(1200, "PF-PDF");
+    const { payment_id } = (await chain.app().inject({ url: `/public/payment_intents/${intent.client_secret}` })).json();
+
+    await chain.app().inject({
+      method: "POST",
+      url: `/public/receipts/${payment_id}/email`,
+      payload: { email: "copy@example.com" },
+    });
+    expect(await emails("receipt", "copy@example.com")).toHaveLength(1);
+
+    const pdf = await chain.app().inject({ url: `/public/receipts/${payment_id}/pdf` });
+    expect(pdf.rawPayload.subarray(0, 5).toString()).toBe("%PDF-");
+  });
+});
+
+describe("edge cases", () => {
+  it("lets a customer pay again if a reorg dropped their transaction", async () => {
+    const intent = (await chain.api("POST", "/v1/payment_intents", { amount: 100, currency: "usd" })).json();
+    await chain.db().query(
+      "UPDATE payment_intents SET status = 'processing', processing_at = now() - interval '6 minutes' WHERE id = $1",
+      [intent.id],
+    );
+    await releaseStuckProcessing(chain.db());
+    expect((await chain.api("GET", `/v1/payment_intents/${intent.id}`)).json().status).toBe("requires_payment_method");
+  });
+
+  it("leaves a recent processing payment alone", async () => {
+    const intent = (await chain.api("POST", "/v1/payment_intents", { amount: 100, currency: "usd" })).json();
+    await chain.db().query("UPDATE payment_intents SET status = 'processing', processing_at = now() WHERE id = $1", [
+      intent.id,
+    ]);
+    await releaseStuckProcessing(chain.db());
+    expect((await chain.api("GET", `/v1/payment_intents/${intent.id}`)).json().status).toBe("processing");
   });
 });
