@@ -112,8 +112,9 @@ flowchart LR
 You need Node 24 and [Foundry](https://getfoundry.sh). Docker is optional.
 
 ```sh
-git clone --recurse-submodules https://github.com/soumyacodes007/whitechain.git
+git clone https://github.com/soumyacodes007/whitechain.git
 cd whitechain
+git submodule update --init
 npm install
 cp .env.example .env
 ```
