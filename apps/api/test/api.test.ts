@@ -15,7 +15,11 @@ const config: Config = {
   chainId: 1874,
   paymentsAddress: "0xD59EDe989E27d8CaAEebb8305897d51d61Dc299d",
   usdtAddress: "0xcedfB56113143d55b2358b8CFbB0dEB5Ad2f55a7",
+  subscriptionsAddress: "0x5C648cc785526432bec6d6B3C5Fb729cA6311aD6",
+  permitName: "Tether USD",
+  permitVersion: "1",
   signerKey: `0x${"ab".repeat(32)}`,
+  operatorKey: `0x${"ab".repeat(32)}`,
   startBlock: 0n,
 };
 
