@@ -39,6 +39,8 @@ const TONES: Record<string, string> = {
   paid: "good",
   active: "good",
   matched: "good",
+  sent: "good",
+  logged: "warn",
   partially_refunded: "warn",
   partially_paid: "warn",
   pending: "warn",

@@ -77,6 +77,7 @@ export async function createInvoice(_: ActionState, form: FormData): Promise<Act
     due_date: due ? Math.floor(new Date(due).getTime() / 1000) : undefined,
     late_fee: lateFee > 0 ? { type: "percent", value: lateFee } : undefined,
     allow_partial: form.get("allow_partial") === "on",
+    reminders: form.get("reminders") === "on",
     notes: text(form, "notes"),
   });
   if (error) return { error };
@@ -88,6 +89,36 @@ export async function invoiceAction(id: string, action: "send" | "void", _: Acti
   if (error) return { error };
   revalidatePath("/dashboard", "layout");
   return { ok: action === "send" ? "Invoice sent." : "Invoice voided." };
+}
+
+export async function remindInvoice(id: string, _: ActionState): Promise<ActionState> {
+  const { error } = await call(`/invoices/${id}/remind`);
+  if (error) return { error };
+  revalidatePath(`/dashboard/invoices/${id}`);
+  return { ok: "Reminder sent." };
+}
+
+export async function duplicateInvoice(id: string, _: ActionState): Promise<ActionState> {
+  const source = await fetch(`${API_URL}/v1/invoices/${id}`, {
+    headers: { authorization: `Bearer ${await secretKey()}` },
+    cache: "no-store",
+  }).then((response) => response.json());
+
+  const { json, error } = await call("/invoices", {
+    customer: { name: source.customer.name, email: source.customer.email ?? undefined },
+    line_items: source.line_items,
+    allow_partial: source.allow_partial,
+    late_fee: source.late_fee ?? undefined,
+    notes: source.notes ?? undefined,
+  });
+  if (error) return { error };
+  redirect(`/dashboard/invoices/${json.id}`);
+}
+
+export async function resendReceipt(id: string, _: ActionState): Promise<ActionState> {
+  const { json, error } = await call(`/payments/${id}/resend_receipt`);
+  if (error) return { error };
+  return { ok: `Receipt sent to ${json.to}.` };
 }
 
 export async function createLink(_: ActionState, form: FormData): Promise<ActionState> {
@@ -162,6 +193,7 @@ export async function saveSettings(_: ActionState, form: FormData): Promise<Acti
     invoice_prefix: text(form, "invoice_prefix"),
     confirmations: Number(form.get("confirmations")),
     gasless: form.get("gasless") === "on",
+    reminders_enabled: form.get("reminders_enabled") === "on",
   });
   if (error) return { error };
   revalidatePath("/dashboard", "layout");

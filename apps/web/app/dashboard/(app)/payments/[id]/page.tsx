@@ -1,5 +1,5 @@
 import { ActionForm, Submit } from "../../../ActionForm";
-import { refund } from "../../../actions";
+import { refund, resendReceipt } from "../../../actions";
 import { api, Badge, date, label, Title, TxLink, usdt } from "../../../lib";
 
 const REASONS = ["requested_by_customer", "duplicate", "cancelled_item", "other"];
@@ -97,9 +97,14 @@ export default async function PaymentPage({ params }: { params: Promise<{ id: st
         ))}
       </section>
 
-      <p className="muted">
-        Receipt link: <a href={`/r/${payment.id}`}>/r/{payment.id}</a>
-      </p>
+      <section className="card">
+        <div className="row">
+          <a href={`/r/${payment.id}`}>Open customer receipt</a>
+          <ActionForm action={resendReceipt.bind(null, payment.id)} className="inline">
+            <Submit className="secondary">Resend receipt</Submit>
+          </ActionForm>
+        </div>
+      </section>
     </>
   );
 }

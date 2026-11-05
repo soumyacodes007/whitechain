@@ -45,6 +45,11 @@ export default async function SettingsPage() {
             Required confirmations
             <input name="confirmations" type="number" min={1} max={20} defaultValue={account.confirmations} />
           </label>
+          <h2>Reminders</h2>
+          <label className="check">
+            <input name="reminders_enabled" type="checkbox" defaultChecked={account.reminders_enabled} /> Email 3 days
+            before, on the due date, and 3 days after
+          </label>
           <Submit>Save settings</Submit>
         </ActionForm>
       </section>

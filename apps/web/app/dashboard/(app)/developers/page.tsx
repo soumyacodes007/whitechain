@@ -12,10 +12,11 @@ const SUPPORTED = [
 ];
 
 export default async function DevelopersPage() {
-  const [keys, endpoints, events] = await Promise.all([
+  const [keys, endpoints, events, emails] = await Promise.all([
     api("/api_keys"),
     api("/webhook_endpoints"),
     api("/event_log"),
+    api("/emails"),
   ]);
   const apiHost = process.env.PUBLIC_API_URL ?? process.env.API_URL ?? "http://localhost:4000";
 
@@ -80,6 +81,35 @@ export default async function DevelopersPage() {
         <pre className="code">{`import { SettleKit } from "@settlekit/node";
 const kit = new SettleKit(process.env.SETTLEKIT_SECRET_KEY);
 const intent = await kit.paymentIntents.create({ amount: 50000, currency: "usdt" });`}</pre>
+      </section>
+
+      <section className="card scroll">
+        <h2>Email log</h2>
+        <p className="muted">Mail shows as logged when no email provider is configured.</p>
+        {emails.data.length === 0 ? (
+          <p className="muted">No emails yet.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Subject</th>
+                <th>To</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {emails.data.map((email: any) => (
+                <tr key={email.id}>
+                  <td>{email.subject}</td>
+                  <td>{email.to_address}</td>
+                  <td>
+                    <Badge status={email.status} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section className="card scroll">
