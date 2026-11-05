@@ -11,16 +11,22 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.15",
+    "exceljs": "^4.4.0",
     "fastify": "^5.12.8",
+    "fflate": "^0.8.3",
+    "pdfkit": "^0.20.2",
     "pg": "^8.23.1",
     "qs": "^6.17.1",
     "viem": "^2.57.16",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@settlekit/node": "^0.1.0",
     "@types/node": "^26.6.6",
+    "@types/pdfkit": "^0.17.7",
     "@types/pg": "^8.23.1",
     "@types/qs": "^6.15.1",
+    "stripe": "^23.1.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
