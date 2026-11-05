@@ -9,6 +9,7 @@
   "scripts": {
     "dev:api": "npm run dev -w @settlekit/api",
     "test": "npm test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:web": "npm run dev -w @settlekit/web"
   }
 }
