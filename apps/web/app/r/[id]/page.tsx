@@ -1,4 +1,5 @@
-import { fetchPublic, formatDate, money, Shell } from "../../lib";
+import { fetchPublic, formatDate, money, PUBLIC_API_URL, Shell } from "../../lib";
+import { ReceiptActions } from "./ReceiptActions";
 
 const STATUSES: Record<string, string> = {
   paid: "Paid",
@@ -77,6 +78,8 @@ export default async function ReceiptPage({ params }: { params: Promise<{ id: st
           </div>
         </section>
       )}
+
+      <ReceiptActions apiUrl={PUBLIC_API_URL} paymentId={receipt.id} />
     </Shell>
   );
 }

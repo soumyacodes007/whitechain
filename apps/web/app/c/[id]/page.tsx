@@ -1,5 +1,6 @@
 import { fetchPublic, money, PUBLIC_API_URL, Shell } from "../../lib";
 import { Checkout } from "./Checkout";
+import { EmailField } from "./EmailField";
 import { Subscribe } from "./Subscribe";
 
 export default async function CheckoutPage({ params }: { params: Promise<{ id: string }> }) {
@@ -23,7 +24,9 @@ export default async function CheckoutPage({ params }: { params: Promise<{ id: s
           {session.expired && session.status !== "complete" ? (
             <p className="error">This checkout expired. Return to the store and try again.</p>
           ) : (
-            <Subscribe
+            <>
+              <EmailField apiUrl={PUBLIC_API_URL} sessionId={session.id} />
+              <Subscribe
               apiUrl={PUBLIC_API_URL}
               sessionId={session.id}
               params={session.subscribe}
@@ -32,6 +35,7 @@ export default async function CheckoutPage({ params }: { params: Promise<{ id: s
               merchantName={session.merchant.name}
               successUrl={session.success_url}
             />
+            </>
           )}
         </section>
       </Shell>
@@ -63,6 +67,7 @@ export default async function CheckoutPage({ params }: { params: Promise<{ id: s
         <Checkout
           apiUrl={PUBLIC_API_URL}
           clientSecret={intent.client_secret}
+          sessionId={session.id}
           expiresAt={intent.expires_at}
           merchantName={intent.merchant.name}
           successUrl={session.success_url}

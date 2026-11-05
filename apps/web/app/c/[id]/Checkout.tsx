@@ -2,6 +2,7 @@
 
 import { SettleCheckout } from "@settlekit/react";
 import { useEffect, useState } from "react";
+import { EmailField } from "./EmailField";
 
 function useSecondsLeft(expiresAt: number) {
   const [left, setLeft] = useState<number>();
@@ -17,6 +18,7 @@ function useSecondsLeft(expiresAt: number) {
 export function Checkout({
   apiUrl,
   clientSecret,
+  sessionId,
   expiresAt,
   merchantName,
   successUrl,
@@ -25,6 +27,7 @@ export function Checkout({
 }: {
   apiUrl: string;
   clientSecret: string;
+  sessionId: string;
   expiresAt: number;
   merchantName: string;
   successUrl: string | null;
@@ -36,6 +39,7 @@ export function Checkout({
 
   return (
     <>
+      {!receipt && <EmailField apiUrl={apiUrl} sessionId={sessionId} />}
       <SettleCheckout apiUrl={apiUrl} clientSecret={clientSecret} onSuccess={(result) => setReceipt(result.paymentId)} />
 
       {receipt ? (
